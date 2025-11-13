@@ -1,6 +1,6 @@
 # A-Z-Sign-Language-Using-Mediapipe-Python
 Create a Folder                 
-Create a File "Sign-Language.py"                              
+Create a File "Name_Of_Your_File.py"                              
 CTRL + Shift + P                           
 Search for Python: Create Environment, Click the venv                                
 Select the 3.11.0 Python Version                                             
@@ -12,4 +12,4 @@ Then Double Click the Activate.ps1
 Install this 2 Requirements in your Terminal                        
 "pip install opencv-python mediapipe numpy"                            
 "pip install scikit-learn joblib"                      
-and Run my code "python name_of_your_file.py in your Terminal
+and Run my code "python Name_Of_Your_File.py" in your Terminal
