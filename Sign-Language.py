@@ -12,6 +12,10 @@ How it works:
   - Press ESC to quit.
 """
 
+"""
+ASL A-Z Sign Recognizer with Bounding Box and Accuracy Score
+"""
+
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -41,6 +45,23 @@ def lm_to_vector(landmarks, image_w, image_h):
         coords = coords / max_abs
     return coords.flatten()
 
+# -------- NEW ACCURACY SCORE CALCULATION -------- #
+def compute_similarity_score(feat, X, y, predicted_label):
+    X = np.array(X)
+    y = np.array(y)
+
+    same_label_samples = X[y == predicted_label]
+
+    if len(same_label_samples) == 0:
+        return 0.0
+
+    distances = np.linalg.norm(same_label_samples - feat, axis=1)
+
+    avg_dist = np.mean(distances)
+    scaled = max(0.0, 1 - avg_dist)
+    return scaled * 100.0
+
+
 class SimpleKNN:
     def __init__(self, k=5):
         self.k = k
@@ -62,6 +83,7 @@ class SimpleKNN:
     def predict(self, X):
         return np.array([self.predict_single(x)[0] for x in X])
 
+
 def load_dataset():
     if os.path.exists(DATASET_FEAT) and os.path.exists(DATASET_LABEL):
         X = np.load(DATASET_FEAT)
@@ -70,10 +92,12 @@ def load_dataset():
         return list(X), list(y)
     return [], []
 
+
 def save_dataset(X, y):
     np.save(DATASET_FEAT, np.array(X))
     np.save(DATASET_LABEL, np.array(y))
-    print(f"Saved dataset: {len(X)} samples to {DATASET_FEAT}, {DATASET_LABEL}")
+    print(f"Saved dataset: {len(X)} samples")
+
 
 def train_model(X, y, k=5):
     if len(X) == 0:
@@ -83,24 +107,23 @@ def train_model(X, y, k=5):
         clf = KNeighborsClassifier(n_neighbors=k)
         clf.fit(X, y)
         joblib.dump(clf, MODEL_FILE)
-        print(f"Trained sklearn KNN and saved to {MODEL_FILE}")
+        print("Trained sklearn KNN and saved.")
         return clf
     else:
         clf = SimpleKNN(k=k)
         clf.fit(X, y)
-        print("Trained SimpleKNN (numpy-only)")
+        print("Trained SimpleKNN")
         return clf
+
 
 def load_model():
     if SKLEARN_AVAILABLE and os.path.exists(MODEL_FILE):
         try:
-            clf = joblib.load(MODEL_FILE)
-            print(f"Loaded model from {MODEL_FILE}")
-            return clf
+            return joblib.load(MODEL_FILE)
         except Exception:
-            print("Failed to load sklearn model, will require retraining or use in-memory classifier.")
             return None
     return None
+
 
 def main():
     X, y = load_dataset()
@@ -110,7 +133,7 @@ def main():
 
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print("Cannot open camera. Please check camera index or permissions.")
+        print("Cannot open camera.")
         return
 
     with mp_hands.Hands(
@@ -119,95 +142,97 @@ def main():
         min_detection_confidence=0.6,
         min_tracking_confidence=0.5,
     ) as hands:
+
         mode = 'collect'
         print("Controls: a..z capture, 1 save, 2 train, 3 run, 4 collect, ESC quit")
 
         while True:
-            ret, frame = cap.read()
-            if not ret:
-                print("Can't receive frame. Trying again...")
+            ok, frame = cap.read()
+            if not ok:
                 continue
 
             img = cv2.flip(frame, 1)
             h, w, _ = img.shape
+
             rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             res = hands.process(rgb)
 
             display_text = f"Mode: {mode} | Samples: {len(X)}"
 
             if res.multi_hand_landmarks:
-                hand_landmarks = res.multi_hand_landmarks[0]
-                mp_drawing.draw_landmarks(img, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+                lm = res.multi_hand_landmarks[0]
+                mp_drawing.draw_landmarks(img, lm, mp_hands.HAND_CONNECTIONS)
 
-                # Bounding box
-                x_coords = [int(lm.x * w) for lm in hand_landmarks.landmark]
-                y_coords = [int(lm.y * h) for lm in hand_landmarks.landmark]
-                x_min, x_max = min(x_coords)-10, max(x_coords)+10
-                y_min, y_max = min(y_coords)-10, max(y_coords)+10
+                # ---- Improved Bounding Box ---- #
+                xs = [int(p.x * w) for p in lm.landmark]
+                ys = [int(p.y * h) for p in lm.landmark]
+                x_min, x_max = min(xs) - 15, max(xs) + 15
+                y_min, y_max = min(ys) - 15, max(ys) + 15
+
                 cv2.rectangle(img, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
 
-                feat = lm_to_vector(hand_landmarks.landmark, w, h)
+                feat = lm_to_vector(lm.landmark, w, h)
 
-                if mode == 'run' and clf is not None:
+                # ---- RUN MODE: Predicting ---- #
+                if mode == "run" and clf is not None:
                     try:
-                        # SimpleKNN
                         if not SKLEARN_AVAILABLE:
-                            pred, confidence = clf.predict_single(feat)
-                            confidence *= 100
+                            pred, conf = clf.predict_single(feat)
+                            percentage = conf * 100
                         else:
-                            # sklearn KNN
                             pred = clf.predict([feat])[0]
-                            confidence = 0
-                            if hasattr(clf, 'predict_proba'):
-                                prob = clf.predict_proba([feat])[0]
-                                confidence = np.max(prob) * 100
+                            percentage = compute_similarity_score(feat, X, np.array(y), pred)
 
-                        # Show predicted letter and confidence
-                        cv2.putText(img, f'{pred} {confidence:.0f}%', (x_min, y_min-15),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+                        cv2.putText(img, f"{pred} {percentage:.2f}%", 
+                                    (x_min, y_min - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 1,
+                                    (0, 255, 0), 3)
 
                     except Exception as e:
-                        cv2.putText(img, "Err pred", (x_min, y_min-15),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
                         print("Prediction error:", e)
 
-            cv2.putText(img, display_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+            cv2.putText(img, display_text, (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
-            # Resize camera feed
-            resize_w, resize_h = 900, 640
-            img_resized = cv2.resize(img, (resize_w, resize_h))
-
-            cv2.imshow('ASL A-Z (mediapipe)', img_resized)
+            img_big = cv2.resize(img, (900, 640))
+            cv2.imshow("ASL A-Z", img_big)
 
             key = cv2.waitKey(1) & 0xFF
-            if key == 27:  # ESC to quit
-                print("Quitting...")
+            if key == 27:
                 break
 
-            if key == ord('1'):
+            # Save dataset
+            if key == ord("1"):
                 save_dataset(X, y)
-            elif key == ord('2'):
-                clf = train_model(X, y, k=5)
-            elif key == ord('3'):
+
+            # Train
+            elif key == ord("2"):
+                clf = train_model(X, y)
+
+            # Run
+            elif key == ord("3"):
                 if clf is None:
-                    print("No trained model found. Train first ('2') or load model file.")
+                    print("Train first.")
                 else:
-                    mode = 'run'
-                    print("Switched to run mode. Press '4' to go back to collect mode.")
-            elif key == ord('4'):
-                mode = 'collect'
-                print("Switched to collect mode.")
-            elif key in LETTER_KEYS and mode == 'collect':
+                    mode = "run"
+
+            # Back to collect
+            elif key == ord("4"):
+                mode = "collect"
+
+            # Capture letters
+            elif key in LETTER_KEYS and mode == "collect":
                 if res.multi_hand_landmarks:
                     feat = lm_to_vector(res.multi_hand_landmarks[0].landmark, w, h)
                     X.append(feat)
                     y.append(LETTER_KEYS[key])
-                    print(f"Captured sample for '{LETTER_KEYS[key]}'. Total samples: {len(X)}")
+                    print(f"Captured '{LETTER_KEYS[key]}'")
                 else:
-                    print("No hand detected. Make sure your hand is in the frame and try again.")
+                    print("No hand detected.")
 
     cap.release()
     cv2.destroyAllWindows()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
